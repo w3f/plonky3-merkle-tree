@@ -304,7 +304,7 @@ impl<
 
         //First row is dealing with hash of leaves
         builder.when_first_row().assert_eq(local[0], //poseidon2.permute(            //            [
-                AB::Expr::from_canonical_u32(self.tree[
+                AB::Expr::from_prime_subfield(self.tree[
                 self.index_to_tree_index(
                     self.leaf_index)]),
              
