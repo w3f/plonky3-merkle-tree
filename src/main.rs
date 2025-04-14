@@ -1,17 +1,16 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use rand::rngs::SmallRng;
+//use rand::rngs::SmallRng;
 use rand::distr::StandardUniform;
 use rand::prelude::Distribution;
 
 use rand::rngs::{StdRng, ThreadRng,};
 use rand::{thread_rng, SeedableRng};
-use rand::{random};
+use rand::random;
 
 use std::borrow::Borrow;
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{Field, PrimeField, Algebra};
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{Field, PrimeField};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
@@ -31,7 +30,7 @@ use tracing_forest::ForestLayer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
-use p3_poseidon2::{ExternalLayerConstants, ExternalLayerConstructor, InternalLayerConstructor};
+//use p3_poseidon2::{ExternalLayerConstants, ExternalLayerConstructor, InternalLayerConstructor};
 
 //We basically repeat the vectorized poseiden2 air trick here in entirety
 use p3_poseidon2_air::{generate_vectorized_trace_rows, Poseidon2Air, Poseidon2Cols};
@@ -426,8 +425,6 @@ fn main() -> Result<(), impl Debug> {
     let constants = RoundConstants::from_rng(&mut rng);
 
     //let constants = RoundConstants::from_rng(&mut thread_rng());
-
-
     let air = PoseidenMerkleTreeAir::<        Val,
         GenericPoseidon2LinearLayersMersenne31,
         POSEIDEN_WIDTH,
