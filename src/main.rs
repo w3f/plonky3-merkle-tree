@@ -1,13 +1,17 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-
-use rand::{random, Rng, SeedableRng};
-use rand::rngs::{StdRng, ThreadRng};
-use rand::distributions::Standard;
+use rand::rngs::SmallRng;
+use rand::distr::StandardUniform;
 use rand::prelude::Distribution;
 
+use rand::rngs::{StdRng, ThreadRng,};
+use rand::{thread_rng, SeedableRng};
+use rand::{random};
+
+use std::borrow::Borrow;
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{Field, PrimeField};
+use p3_field::{Field, PrimeField, Algebra};
+use p3_field::PrimeCharacteristicRing;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
@@ -19,7 +23,7 @@ use p3_fri::{create_benchmark_fri_config};
 use p3_keccak::Keccak256Hash;
 use p3_poseidon2::{Poseidon2, GenericPoseidon2LinearLayers};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_mersenne_31::Mersenne31;
+use p3_mersenne_31::{Mersenne31, GenericPoseidon2LinearLayersMersenne31};
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher32};
 use p3_uni_stark::{prove, verify, StarkConfig};
 use tracing_forest::util::LevelFilter;
@@ -31,20 +35,20 @@ use p3_poseidon2::{ExternalLayerConstants, ExternalLayerConstructor, InternalLay
 
 //We basically repeat the vectorized poseiden2 air trick here in entirety
 use p3_poseidon2_air::{generate_vectorized_trace_rows, Poseidon2Air, Poseidon2Cols};
-use p3_poseidon2_air::{RoundConstants, VectorizedPoseidon2Air};
+use p3_poseidon2_air::{RoundConstants, VectorizedPoseidon2Air, VectorizedPoseidon2Cols, air_eval};
 
 const SECURE_WIDTH : usize = 8; 
 const MERKLE_WIDTH : usize = SECURE_WIDTH * 2;
 
 pub(crate) const POSEIDEN_S_BOX_DEGREE: u64 = 5;
 
-pub type Poseidon2Merkle<F: PrimeField> = Poseidon2<
-    F,
-    ExternalLayerConstants<F, MERKLE_WIDTH>,
-    InternalLayerConstructor<F, MERKLE_WIDTH>,
-    MERKLE_WIDTH,
-    POSEIDEN_S_BOX_DEGREE,
->;
+// pub type Poseidon2Merkle<F: PrimeField> = Poseidon2<
+//     F,
+//     ExternalLayerConstants<F, MERKLE_WIDTH>,
+//     InternalLayerConstructor<F, MERKLE_WIDTH>,
+//     MERKLE_WIDTH,
+//     POSEIDEN_S_BOX_DEGREE,
+// >;
 
 const ZERO_PAD: [u32; SECURE_WIDTH] = [0u32; SECURE_WIDTH];
 const TREE_HEIGHT: usize = 16;
@@ -103,7 +107,7 @@ impl<F: PrimeField,
     ) -> Self {
         
         Self {
-            poseiden2_air: Poseidon2Air::new(constants),
+            poseiden2_air: Poseidon2Air::new(constants.clone()),
             poseiden_constants: constants,
             tree: tree,
             leaf_index: leaf_index,
@@ -183,7 +187,7 @@ impl<F: PrimeField,
        2 * index + 2
     }
 
-    fn generate_merkle_proof_trace(&self, tree: Vec<[F; SECURE_WIDTH]>, leaf_index: usize,
+    fn generate_merkle_proof_trace(&self, 
     ) -> RowMajorMatrix<F> where
             LinearLayers: GenericPoseidon2LinearLayers<F, POSEIDEN_WIDTH>,
     {
@@ -195,7 +199,7 @@ impl<F: PrimeField,
         let mut values = Vec::with_capacity(TREE_HEIGHT * (2 + POSEIDEN_VECTOR_LEN));
 
         //we can just fill up the columns from the tree
-        let current_node = Self::index_to_tree_index(leaf_index);
+        let mut current_node = Self::index_to_tree_index(self.leaf_index);
 
         //not clear what are these for
         let extra_capacity_bits = 0;
@@ -204,7 +208,7 @@ impl<F: PrimeField,
             (0..SECURE_WIDTH).map(|i| values.push(self.tree[current_node][i]));
             (0..SECURE_WIDTH).map(|i| values.push(self.tree[Self::sibling_index(current_node)][i]));
 
-            let concat_input: [F; POSEIDEN_WIDTH];
+            let mut concat_input: [F; POSEIDEN_WIDTH] = [F::ZERO; POSEIDEN_WIDTH];
                 concat_input[..SECURE_WIDTH].copy_from_slice(&self.tree[current_node]);
                 concat_input[SECURE_WIDTH..].copy_from_slice(&self.tree[Self::sibling_index(current_node)]);
             let inputs = vec![concat_input];
@@ -287,7 +291,8 @@ impl<
         POSEIDEN_HALF_FULL_ROUNDS,
         POSEIDEN_PARTIAL_ROUNDS,
         POSEIDEN_VECTOR_LEN,
->
+        >
+    where AB::F : PrimeField
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
@@ -304,9 +309,9 @@ impl<
 
         //First row is dealing with hash of leaves
         builder.when_first_row().assert_eq(local[0], //poseidon2.permute(            //            [
-                AB::Expr::from_prime_subfield(self.tree[
-                self.index_to_tree_index(
-                    self.leaf_index)]),
+                <AB::Expr as From<AB::F>>::from(self.tree[
+                Self::index_to_tree_index(
+                    self.leaf_index)][0])
              
 //                ZERO_PAD
 //            ]
@@ -316,31 +321,44 @@ impl<
         //Assuming the leafs are already hash of something
         builder.when_first_row().assert_eq(local[1], //poseidon2.permute(            
 //            [
-                AB::Expr::from_canonical_u32(self.tree[
-                self.sibling_index(self.index_to_tree_index(
-                    self.leaf_index))]),
+                                           self.tree[
+                Self::sibling_index(Self::index_to_tree_index(
+                    self.leaf_index))][0],
              
         //         ZERO_PAD
         //     ]
         // )[0..SECURE_WIDTH]
         ); //Probably redundant (column 1 is input)
 
+
+        let poseiden_part = local[2..].to_vec();
         //we verify that poseiden2 is evaluated correctly
-        for perm in &local.cols[2..] {
-            eval(&self.air, builder, perm);
+        let poseiden_local :
+                    &VectorizedPoseidon2Cols<
+            _,
+            POSEIDEN_WIDTH,
+            POSEIDEN_SBOX_DEGREE,
+            POSEIDEN_SBOX_REGISTERS,
+            POSEIDEN_HALF_FULL_ROUNDS,
+            POSEIDEN_PARTIAL_ROUNDS,
+            POSEIDEN_VECTOR_LEN,
+        > = (*poseiden_part).borrow();
+
+        for perm in &poseiden_local.cols {
+            air_eval(&self.poseiden2_air, builder, perm);
         }
 
         // Enforce state transition constraintse
         // next is parent, it should be equal hash of childs
         builder.when_transition().assert_eq(next[0], 
 
-                local.cols[-1],
+                local[local.len() -1],
         );        
         //builder.when_tansition().assert_eq(next[1], local[0] + local[1]);
 
         // Constrain the final value
         let merkle_root = self.tree[0];
-        let final_value = AB::Expr::from_canonical_u32(merkle_root);
+        let final_value = merkle_root[0];
         builder.when_last_row().assert_eq(local[1], final_value);
     }
 
@@ -397,9 +415,6 @@ fn main() -> Result<(), impl Debug> {
         _phantom: PhantomData,
     };
 
-    type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
-    let config = MyConfig::new(pcs);
-
     let tree_size = 1 << TREE_HEIGHT;
     //TOOD: I'm just going to fill everything randomly just to let the thing compiles
     //Then poseidenize it after
@@ -407,21 +422,37 @@ fn main() -> Result<(), impl Debug> {
     
     let leaf_index : usize = 1;
     let mut rng = rand::thread_rng();
+    //let mut rng = SmallRng::seed_from_u64(1);
+    let constants = RoundConstants::from_rng(&mut rng);
 
-    let constants = RoundConstants::<Val, POSEIDEN_WIDTH, POSEIDEN_HALF_FULL_ROUNDS, POSEIDEN_PARTIAL_ROUNDS>::from_rng(&mut rng);
+    //let constants = RoundConstants::from_rng(&mut thread_rng());
 
-    let air = PoseidenMerkleTreeAir::new(constants, tree,  leaf_index);
-    let trace = air.generate_merkle_proof_trace(tree, leaf_index);
+
+    let air = PoseidenMerkleTreeAir::<        Val,
+        GenericPoseidon2LinearLayersMersenne31,
+        POSEIDEN_WIDTH,
+        POSEIDEN_SBOX_DEGREE,
+        POSEIDEN_SBOX_REGISTERS,
+        POSEIDEN_HALF_FULL_ROUNDS,
+        POSEIDEN_PARTIAL_ROUNDS,
+        POSEIDEN_VECTOR_LEN,
+>::new(constants, tree,  leaf_index);
+    let trace = air.generate_merkle_proof_trace();
 
     let mut challenger = Challenger::from_hasher(vec![], byte_hash);
-    let proof = prove(&config, &air, &mut challenger, trace, &vec![]);
+
+    type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
+    let config = MyConfig::new(pcs, challenger);
+
+    let proof = prove(&config, &air, trace, &vec![]);
 
     let mut challenger = Challenger::from_hasher(vec![], byte_hash);
-    verify(&config, &air, &mut challenger, &proof, &vec![])
+
+    verify(&config, &air, &proof, &vec![])
 }
 
 fn generate_random_tree<F: PrimeField>(tree_size: usize) -> Vec<[F; SECURE_WIDTH]> where
-    Standard: Distribution<[PrimeField; SECURE_WIDTH]>,
+    StandardUniform: Distribution<[F; SECURE_WIDTH]>,
 {
     (0..tree_size).map(|_| random()).collect::<Vec<_>>()
     
