@@ -36,10 +36,8 @@ use tracing_subscriber::{EnvFilter, Registry};
 use p3_poseidon2_air::{generate_vectorized_trace_rows, Poseidon2Air, Poseidon2Cols};
 use p3_poseidon2_air::{RoundConstants, VectorizedPoseidon2Air, VectorizedPoseidon2Cols, air_eval};
 
-const SECURE_WIDTH : usize = 8; 
-const MERKLE_WIDTH : usize = SECURE_WIDTH * 2;
-
-pub(crate) const POSEIDEN_S_BOX_DEGREE: u64 = 5;
+const SECURE_WIDTH : usize = 8;  //this should be half of posiden width so we could compute
+// the hash of concatination of two hashes.
 
 // pub type Poseidon2Merkle<F: PrimeField> = Poseidon2<
 //     F,
@@ -51,7 +49,6 @@ pub(crate) const POSEIDEN_S_BOX_DEGREE: u64 = 5;
 
 const ZERO_PAD: [u32; SECURE_WIDTH] = [0u32; SECURE_WIDTH];
 const TREE_HEIGHT: usize = 16;
-
 
 pub struct PoseidenMerkleTreeAir<F: Field,
     LinearLayers,
@@ -148,6 +145,10 @@ impl<F: PrimeField,
         //2^16 = 65536
         1 << TREE_HEIGHT
     }
+
+    fn number_of_non_leaf_nodes() -> usize {
+        (1 << (TREE_HEIGHT - 1)) - 1
+        }
     
     // Root node at index 0.
     // Left child of node at index i is at 2*i + 1.
@@ -155,20 +156,20 @@ impl<F: PrimeField,
     // Parent of node at index i is at (i - 1) / 2
 
     /// return leaf index in the tree vec Leaf tree index = number of internal nodes + leaf-index - 1
-    fn index_to_tree_index(index: usize) -> usize {
-        2 * index + 1
+    fn leaf_index_to_tree_index(leaf_index: usize) -> usize {
+        Self::number_of_non_leaf_nodes() + leaf_index
     }
 
     /// return the index of the sibling of a node
     fn sibling_index(index: usize) -> usize {
-        index -2 * Self::is_right_sibling(Self::index_to_tree_index(index)) + 1 
+        index -2 * Self::is_right_sibling(index) + 1 
             
     }
         
     /// return true if it is a 1 sibling otherwise 0
     #[inline]
     fn is_right_sibling(index: usize) -> usize {
-        index % 2
+        1 - index % 2
     }
 
     /// given an index of node in the tree vector it returns the index
@@ -198,19 +199,24 @@ impl<F: PrimeField,
         let mut values = Vec::with_capacity(TREE_HEIGHT * (2 + POSEIDEN_VECTOR_LEN));
 
         //we can just fill up the columns from the tree
-        let mut current_node = Self::index_to_tree_index(self.leaf_index);
+        let mut current_node = Self::leaf_index_to_tree_index(self.leaf_index);
 
         //not clear what are these for
         let extra_capacity_bits = 0;
+        let mut poseiden_matrix_width = 0;
     
-        for _ in 0..TREE_HEIGHT {
-            (0..SECURE_WIDTH).map(|i| values.push(self.tree[current_node][i]));
-            (0..SECURE_WIDTH).map(|i| values.push(self.tree[Self::sibling_index(current_node)][i]));
+        for _ in 0..TREE_HEIGHT - 1 { //we do not hash the root
+            for i in 0..SECURE_WIDTH {
+                values.push(self.tree[current_node][i]);
+                }
+            for i in 0..SECURE_WIDTH {               
+             values.push(self.tree[Self::sibling_index(current_node)][i]);
+            }
 
             let mut concat_input: [F; POSEIDEN_WIDTH] = [F::ZERO; POSEIDEN_WIDTH];
                 concat_input[..SECURE_WIDTH].copy_from_slice(&self.tree[current_node]);
                 concat_input[SECURE_WIDTH..].copy_from_slice(&self.tree[Self::sibling_index(current_node)]);
-            let inputs = vec![concat_input];
+            let inputs = vec![concat_input; POSEIDEN_VECTOR_LEN];
             let poseiden_matrix = generate_vectorized_trace_rows::<
                     F,
                 LinearLayers,
@@ -224,13 +230,14 @@ impl<F: PrimeField,
             current_node = Self::parent_index(current_node);
             
             //this supposed to be a one row matrix
-            for j in (0..POSEIDEN_VECTOR_LEN).step_by(SECURE_WIDTH) {
-                
+            for j in (0..poseiden_matrix.width()) {// .step_by(SECURE_WIDTH) {                
                 values.push(poseiden_matrix.get(0, j))
             }
+            poseiden_matrix_width = poseiden_matrix.width();
+            println!("{}", poseiden_matrix_width);
             
         }
-        RowMajorMatrix::new(values, 2 + POSEIDEN_VECTOR_LEN)
+        RowMajorMatrix::new(values, 2 * SECURE_WIDTH * POSEIDEN_VECTOR_LEN +  poseiden_matrix_width)
     }
         
 }
@@ -306,10 +313,11 @@ impl<
 
         //let poseiden2 = Poseidon2Merkle::<AB::F>;
 
+        println!("length of local is {}", local.len());
         //First row is dealing with hash of leaves
         builder.when_first_row().assert_eq(local[0], //poseidon2.permute(            //            [
                 <AB::Expr as From<AB::F>>::from(self.tree[
-                Self::index_to_tree_index(
+                Self::leaf_index_to_tree_index(
                     self.leaf_index)][0])
              
 //                ZERO_PAD
@@ -321,7 +329,7 @@ impl<
         builder.when_first_row().assert_eq(local[1], //poseidon2.permute(            
 //            [
                                            self.tree[
-                Self::sibling_index(Self::index_to_tree_index(
+                Self::sibling_index(Self::leaf_index_to_tree_index(
                     self.leaf_index))][0],
              
         //         ZERO_PAD
@@ -368,7 +376,7 @@ const POSEIDEN_SBOX_DEGREE: u64 = 7;
 const POSEIDEN_SBOX_REGISTERS: usize = 1;
 const POSEIDEN_HALF_FULL_ROUNDS: usize = 4;
 const POSEIDEN_PARTIAL_ROUNDS: usize = 20;
-const POSEIDEN_VECTOR_LEN: usize = 1 << 3;
+const POSEIDEN_VECTOR_LEN: usize = 1; //1 << 3;
 
 fn main() -> Result<(), impl Debug> {
     let env_filter = EnvFilter::builder()
