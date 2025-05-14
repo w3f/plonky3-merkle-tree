@@ -4,26 +4,29 @@ use std::marker::PhantomData;
 use rand::distr::StandardUniform;
 use rand::prelude::Distribution;
 
-use rand::rngs::{StdRng, ThreadRng,};
-use rand::{rng, SeedableRng};
+use rand::rngs::{StdRng, ThreadRng};
 use rand::{random, Rng};
+use rand::{rng, SeedableRng};
 
-use std::borrow::Borrow;
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{Field, PrimeField, InjectiveMonomial};
-use p3_matrix::Matrix;
+use p3_field::{Field, InjectiveMonomial, PrimeField};
 use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::Matrix;
+use std::borrow::Borrow;
 
 use p3_challenger::{HashChallenger, SerializingChallenger32};
 use p3_circle::CirclePcs;
 use p3_commit::ExtensionMmcs;
 use p3_field::extension::BinomialExtensionField;
-use p3_fri::{create_benchmark_fri_config};
+use p3_fri::create_benchmark_fri_config;
 use p3_keccak::Keccak256Hash;
-use p3_poseidon2::{Poseidon2, GenericPoseidon2LinearLayers};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_mersenne_31::{Mersenne31, GenericPoseidon2LinearLayersMersenne31, Poseidon2InternalLayerMersenne31, Poseidon2ExternalLayerMersenne31};
-use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher32, Permutation};
+use p3_mersenne_31::{
+    GenericPoseidon2LinearLayersMersenne31, Mersenne31, Poseidon2ExternalLayerMersenne31,
+    Poseidon2InternalLayerMersenne31,
+};
+use p3_poseidon2::{GenericPoseidon2LinearLayers, Poseidon2};
+use p3_symmetric::{CompressionFunctionFromHasher, Permutation, SerializingHasher32};
 use p3_uni_stark::{prove, verify, StarkConfig};
 use tracing_forest::util::LevelFilter;
 use tracing_forest::ForestLayer;
@@ -33,30 +36,32 @@ use tracing_subscriber::{EnvFilter, Registry};
 //use p3_poseidon2::{ExternalLayerConstants, ExternalLayerConstructor, InternalLayerConstructor};
 
 //We basically repeat the vectorized poseidon2 air trick here in entirety
+use p3_poseidon2_air::{air_eval, RoundConstants, VectorizedPoseidon2Cols};
 use p3_poseidon2_air::{generate_vectorized_trace_rows, Poseidon2Air};
-use p3_poseidon2_air::{RoundConstants, VectorizedPoseidon2Cols, air_eval};
 
-use p3_poseidon2::{ExternalLayerConstructor, InternalLayerConstructor, ExternalLayer, InternalLayer, ExternalLayerConstants};
+use p3_poseidon2::{
+    ExternalLayer, ExternalLayerConstants, ExternalLayerConstructor, InternalLayer,
+    InternalLayerConstructor,
+};
 
-const SECURE_WIDTH : usize = 8;  //this should be half of posiden width so we could compute
-// the hash of concatination of two hashes.
-
+const SECURE_WIDTH: usize = 8; //this should be half of posiden width so we could compute
+                               // the hash of concatination of two hashes.
 
 const TREE_HEIGHT: usize = 16;
 
-
-pub struct PoseidonMerkleTreeAir<F: Field + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
-                                 LinearLayers,
-                                 Poseidon2ExternalLayerConstructor: ExternalLayerConstructor<F, POSEIDON_WIDTH> + ExternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>,
-                                 Poseidon2InternalLayerConstructor: InternalLayerConstructor<F> + InternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>,
-                                 const POSEIDON_WIDTH: usize,
-                                 const POSEIDON_SBOX_DEGREE: u64,
-                                 const POSEIDON_SBOX_REGISTERS: usize,
-                                 const POSEIDON_HALF_FULL_ROUNDS: usize,
-                                 const POSEIDON_PARTIAL_ROUNDS: usize,
-                                 const POSEIDON_VECTOR_LEN: usize,
-                                 >
-{
+pub struct PoseidonMerkleTreeAir<
+    F: Field + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
+    LinearLayers,
+    Poseidon2ExternalLayerConstructor: ExternalLayerConstructor<F, POSEIDON_WIDTH>
+        + ExternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>,
+    Poseidon2InternalLayerConstructor: InternalLayerConstructor<F> + InternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>,
+    const POSEIDON_WIDTH: usize,
+    const POSEIDON_SBOX_DEGREE: u64,
+    const POSEIDON_SBOX_REGISTERS: usize,
+    const POSEIDON_HALF_FULL_ROUNDS: usize,
+    const POSEIDON_PARTIAL_ROUNDS: usize,
+    const POSEIDON_VECTOR_LEN: usize,
+> {
     pub(crate) poseidon2_air: Poseidon2Air<
         F,
         LinearLayers,
@@ -67,100 +72,104 @@ pub struct PoseidonMerkleTreeAir<F: Field + InjectiveMonomial<POSEIDON_SBOX_DEGR
         POSEIDON_PARTIAL_ROUNDS,
     >,
 
-
     pub poseidon_beginning_full_round_constants: [[F; POSEIDON_WIDTH]; POSEIDON_HALF_FULL_ROUNDS],
     pub poseidon_partial_round_constants: [F; POSEIDON_PARTIAL_ROUNDS],
     pub poseidon_ending_full_round_constants: [[F; POSEIDON_WIDTH]; POSEIDON_HALF_FULL_ROUNDS],
 
-    pub poseidon_constants: RoundConstants<F, POSEIDON_WIDTH, POSEIDON_HALF_FULL_ROUNDS, POSEIDON_PARTIAL_ROUNDS>,
+    pub poseidon_constants:
+        RoundConstants<F, POSEIDON_WIDTH, POSEIDON_HALF_FULL_ROUNDS, POSEIDON_PARTIAL_ROUNDS>,
     pub tree: Vec<[F; SECURE_WIDTH]>,
     pub proof: Vec<[F; SECURE_WIDTH]>,
     pub leaf_index: usize,
     pub poseidon2_hasher: Poseidon2<
-            F,
+        F,
         Poseidon2ExternalLayerConstructor,
         Poseidon2InternalLayerConstructor,
         POSEIDON_WIDTH,
         POSEIDON_SBOX_DEGREE,
-        >,
+    >,
 }
 
-impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
-     LinearLayers: ,
-     Poseidon2ExternalLayerConstructor: ExternalLayerConstructor<F, POSEIDON_WIDTH> + ExternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>,
-     Poseidon2InternalLayerConstructor: InternalLayerConstructor<F> + InternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>,
-    const POSEIDON_WIDTH: usize,
-    const POSEIDON_SBOX_DEGREE: u64,
-    const POSEIDON_SBOX_REGISTERS: usize,
-    const POSEIDON_HALF_FULL_ROUNDS: usize,
-    const POSEIDON_PARTIAL_ROUNDS: usize,
-    const POSEIDON_VECTOR_LEN: usize,
-     > PoseidonMerkleTreeAir<
+impl<
+        F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
+        LinearLayers,
+        Poseidon2ExternalLayerConstructor: ExternalLayerConstructor<F, POSEIDON_WIDTH>
+            + ExternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>,
+        Poseidon2InternalLayerConstructor: InternalLayerConstructor<F> + InternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>,
+        const POSEIDON_WIDTH: usize,
+        const POSEIDON_SBOX_DEGREE: u64,
+        const POSEIDON_SBOX_REGISTERS: usize,
+        const POSEIDON_HALF_FULL_ROUNDS: usize,
+        const POSEIDON_PARTIAL_ROUNDS: usize,
+        const POSEIDON_VECTOR_LEN: usize,
+    >
+    PoseidonMerkleTreeAir<
         F,
-    LinearLayers,
-            Poseidon2ExternalLayerConstructor,
-    Poseidon2InternalLayerConstructor,
+        LinearLayers,
+        Poseidon2ExternalLayerConstructor,
+        Poseidon2InternalLayerConstructor,
         POSEIDON_WIDTH,
         POSEIDON_SBOX_DEGREE,
         POSEIDON_SBOX_REGISTERS,
         POSEIDON_HALF_FULL_ROUNDS,
         POSEIDON_PARTIAL_ROUNDS,
-    POSEIDON_VECTOR_LEN,
+        POSEIDON_VECTOR_LEN,
     >
 {
-
-    pub fn new(leaves: Vec<[F; SECURE_WIDTH]>,
-               leaf_index: usize, 
-    ) -> Self where
+    pub fn new(leaves: Vec<[F; SECURE_WIDTH]>, leaf_index: usize) -> Self
+    where
         StandardUniform: Distribution<F> + Distribution<[F; POSEIDON_WIDTH]>,
-
     {
-
         let mut rng = rand::rng();
-        
-        let poseidon_beginning_full_round_constants: [[F; POSEIDON_WIDTH]; POSEIDON_HALF_FULL_ROUNDS] = core::array::from_fn(|_| rng.sample(StandardUniform));
-        let poseidon_partial_round_constants: [F; POSEIDON_PARTIAL_ROUNDS] = core::array::from_fn(|_| rng.sample(StandardUniform));
-        let poseidon_ending_full_round_constants: [[F; POSEIDON_WIDTH]; POSEIDON_HALF_FULL_ROUNDS] = core::array::from_fn(|_| rng.sample(StandardUniform));
+
+        let poseidon_beginning_full_round_constants: [[F; POSEIDON_WIDTH];
+            POSEIDON_HALF_FULL_ROUNDS] = core::array::from_fn(|_| rng.sample(StandardUniform));
+        let poseidon_partial_round_constants: [F; POSEIDON_PARTIAL_ROUNDS] =
+            core::array::from_fn(|_| rng.sample(StandardUniform));
+        let poseidon_ending_full_round_constants: [[F; POSEIDON_WIDTH]; POSEIDON_HALF_FULL_ROUNDS] =
+            core::array::from_fn(|_| rng.sample(StandardUniform));
 
         let poseidon_air_constant = RoundConstants::new(
             poseidon_beginning_full_round_constants,
             poseidon_partial_round_constants,
             poseidon_ending_full_round_constants,
-
         );
-        
-            
-        let poseidon2_hasher = Self::new_poseidon_from_air_constants(poseidon_beginning_full_round_constants.clone(),
-                                                               poseidon_partial_round_constants.clone(),
-                                                               poseidon_ending_full_round_constants.clone());
-            
+
+        let poseidon2_hasher = Self::new_poseidon_from_air_constants(
+            poseidon_beginning_full_round_constants.clone(),
+            poseidon_partial_round_constants.clone(),
+            poseidon_ending_full_round_constants.clone(),
+        );
+
         Self {
             poseidon_beginning_full_round_constants: poseidon_beginning_full_round_constants,
             poseidon_partial_round_constants: poseidon_partial_round_constants,
             poseidon_ending_full_round_constants: poseidon_ending_full_round_constants,
 
             poseidon2_air: Poseidon2Air::new(poseidon_air_constant.clone()),
-            
+
             poseidon_constants: poseidon_air_constant,
-            
+
             tree: Self::generate_merkle_tree(poseidon2_hasher.clone(), leaves),
             poseidon2_hasher: poseidon2_hasher,
- leaf_index: leaf_index,
-            proof: vec![],  //TODO: compute the correct proof.
- 
+            leaf_index: leaf_index,
+            proof: vec![], //TODO: compute the correct proof.
         }
     }
 
     /// Generate a Merkle tree from the leaves
     /// because we are using this in the intialization
     /// we can't use self.
-    fn generate_merkle_tree(poseidon2_hasher: Poseidon2<
+    fn generate_merkle_tree(
+        poseidon2_hasher: Poseidon2<
             F,
-        Poseidon2ExternalLayerConstructor,
-        Poseidon2InternalLayerConstructor,
-        POSEIDON_WIDTH,
-        POSEIDON_SBOX_DEGREE,
-        >, leaves: Vec<[F; SECURE_WIDTH]>) -> Vec<[F; SECURE_WIDTH]> {
+            Poseidon2ExternalLayerConstructor,
+            Poseidon2InternalLayerConstructor,
+            POSEIDON_WIDTH,
+            POSEIDON_SBOX_DEGREE,
+        >,
+        leaves: Vec<[F; SECURE_WIDTH]>,
+    ) -> Vec<[F; SECURE_WIDTH]> {
         let mut tree = Vec::new();
 
         // Hash each leaf and add to the tree
@@ -176,42 +185,54 @@ impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
             let mut next_level = Vec::new();
 
             for chunk in current_level.chunks(2) {
-                next_level.push(Self::hash_children(poseidon2_hasher.clone(), chunk[0], chunk[1]));
+                next_level.push(Self::hash_children(
+                    poseidon2_hasher.clone(),
+                    chunk[0],
+                    chunk[1],
+                ));
             }
 
             current_level = next_level;
             tree.extend_from_slice(&current_level);
         }
-        
+
         tree
     }
 
-    fn hash_leaf(poseidon2_hasher: Poseidon2<
+    fn hash_leaf(
+        poseidon2_hasher: Poseidon2<
             F,
-                Poseidon2ExternalLayerConstructor,
-
-        Poseidon2InternalLayerConstructor,
-        POSEIDON_WIDTH,
-        POSEIDON_SBOX_DEGREE,
-        >, leaf:[F; SECURE_WIDTH]) -> [F; SECURE_WIDTH] {
+            Poseidon2ExternalLayerConstructor,
+            Poseidon2InternalLayerConstructor,
+            POSEIDON_WIDTH,
+            POSEIDON_SBOX_DEGREE,
+        >,
+        leaf: [F; SECURE_WIDTH],
+    ) -> [F; SECURE_WIDTH] {
         Self::hash_children(poseidon2_hasher, leaf, [F::ZERO; SECURE_WIDTH])
-
     }
 
-    fn hash_children(poseidon2_hasher: Poseidon2<
+    fn hash_children(
+        poseidon2_hasher: Poseidon2<
             F,
-                Poseidon2ExternalLayerConstructor,
-        Poseidon2InternalLayerConstructor,
-        POSEIDON_WIDTH,
-        POSEIDON_SBOX_DEGREE,
-        >, left_child: [F; SECURE_WIDTH], right_child: [F; SECURE_WIDTH]) -> [F; SECURE_WIDTH] {
+            Poseidon2ExternalLayerConstructor,
+            Poseidon2InternalLayerConstructor,
+            POSEIDON_WIDTH,
+            POSEIDON_SBOX_DEGREE,
+        >,
+        left_child: [F; SECURE_WIDTH],
+        right_child: [F; SECURE_WIDTH],
+    ) -> [F; SECURE_WIDTH] {
         let mut input = [F::ZERO; POSEIDON_WIDTH];
-        input.copy_from_slice([left_child.as_slice(), right_child.as_slice()].concat().as_slice());
+        input.copy_from_slice(
+            [left_child.as_slice(), right_child.as_slice()]
+                .concat()
+                .as_slice(),
+        );
         let mut parent: [F; SECURE_WIDTH] = [F::ZERO; SECURE_WIDTH];
         parent.copy_from_slice(&poseidon2_hasher.permute(input)[0..SECURE_WIDTH]);
 
         parent
-
     }
 
     // pub fn generate_vectorized_trace_rows(
@@ -240,7 +261,7 @@ impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
     fn height() -> usize {
         TREE_HEIGHT
     }
-    
+
     fn internal_node_no() -> usize {
         //2^31 = 2147483648
         //2147483648;
@@ -250,8 +271,8 @@ impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
 
     fn number_of_non_leaf_nodes() -> usize {
         (1 << (TREE_HEIGHT - 1)) - 1
-        }
-    
+    }
+
     // Root node at index 0.
     // Left child of node at index i is at 2*i + 1.
     // Right child of node at index i is at 2*i + 2.
@@ -264,10 +285,9 @@ impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
 
     /// return the index of the sibling of a node
     fn sibling_index(index: usize) -> usize {
-        index -2 * Self::is_right_sibling(index) + 1 
-            
+        index - 2 * Self::is_right_sibling(index) + 1
     }
-        
+
     /// return true if it is a 1 sibling otherwise 0
     #[inline]
     fn is_right_sibling(index: usize) -> usize {
@@ -282,22 +302,21 @@ impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
 
     /// return the index of the left child
     fn left_child(index: usize) -> usize {
-       2 * index + 1
+        2 * index + 1
     }
 
     fn right_child(index: usize) -> usize {
-       2 * index + 2
+        2 * index + 2
     }
 
-    fn generate_merkle_proof_trace(&self, 
-    ) -> RowMajorMatrix<F> where
-            LinearLayers: GenericPoseidon2LinearLayers<F, POSEIDON_WIDTH>,
+    fn generate_merkle_proof_trace(&self) -> RowMajorMatrix<F>
+    where
+        LinearLayers: GenericPoseidon2LinearLayers<F, POSEIDON_WIDTH>,
     {
-
         //We put all rows with all their columns in a flat vector and then we'll
         //tell plonky to turn it into a nice a table with number of columns
         //There are two columns in our air table and the number of steps is the
-        //depth of the tree. 
+        //depth of the tree.
         let mut values = Vec::with_capacity(TREE_HEIGHT * (2 + POSEIDON_VECTOR_LEN));
 
         //we can just fill up the columns from the tree
@@ -306,40 +325,46 @@ impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
         //not clear what are these for
         let extra_capacity_bits = 0;
         let mut poseidon_matrix_width = 0;
-    
-        for _ in 0..TREE_HEIGHT - 1 { //we do not hash the root
+
+        for _ in 0..TREE_HEIGHT - 1 {
+            //we do not hash the root
             for i in 0..SECURE_WIDTH {
                 values.push(self.tree[current_node][i]);
-                }
-            for i in 0..SECURE_WIDTH {               
-             values.push(self.tree[Self::sibling_index(current_node)][i]);
+            }
+            for i in 0..SECURE_WIDTH {
+                values.push(self.tree[Self::sibling_index(current_node)][i]);
             }
 
             let mut concat_input: [F; POSEIDON_WIDTH] = [F::ZERO; POSEIDON_WIDTH];
-                concat_input[..SECURE_WIDTH].copy_from_slice(&self.tree[current_node]);
-                concat_input[SECURE_WIDTH..].copy_from_slice(&self.tree[Self::sibling_index(current_node)]);
+            concat_input[..SECURE_WIDTH].copy_from_slice(&self.tree[current_node]);
+            concat_input[SECURE_WIDTH..]
+                .copy_from_slice(&self.tree[Self::sibling_index(current_node)]);
             let inputs = vec![concat_input; POSEIDON_VECTOR_LEN];
-            let poseidon_matrix = generate_vectorized_trace_rows::<
+            let poseidon_matrix =
+                generate_vectorized_trace_rows::<
                     F,
-                LinearLayers,
-                POSEIDON_WIDTH,
-                POSEIDON_SBOX_DEGREE,
-                POSEIDON_SBOX_REGISTERS,
-                POSEIDON_HALF_FULL_ROUNDS,
-                POSEIDON_PARTIAL_ROUNDS,
-                POSEIDON_VECTOR_LEN,
+                    LinearLayers,
+                    POSEIDON_WIDTH,
+                    POSEIDON_SBOX_DEGREE,
+                    POSEIDON_SBOX_REGISTERS,
+                    POSEIDON_HALF_FULL_ROUNDS,
+                    POSEIDON_PARTIAL_ROUNDS,
+                    POSEIDON_VECTOR_LEN,
                 >(inputs, &self.poseidon_constants, extra_capacity_bits);
             current_node = Self::parent_index(current_node);
-            
+
             //this supposed to be a one row matrix
-            for j in 0..poseidon_matrix.width() {// .step_by(SECURE_WIDTH) {                
+            for j in 0..poseidon_matrix.width() {
+                // .step_by(SECURE_WIDTH) {
                 values.push(poseidon_matrix.get(0, j))
             }
             poseidon_matrix_width = poseidon_matrix.width();
             println!("{}", poseidon_matrix_width);
-            
         }
-        RowMajorMatrix::new(values, 2 * SECURE_WIDTH * POSEIDON_VECTOR_LEN +  poseidon_matrix_width)
+        RowMajorMatrix::new(
+            values,
+            2 * SECURE_WIDTH * POSEIDON_VECTOR_LEN + poseidon_matrix_width,
+        )
     }
 
     fn new_poseidon_from_air_constants(
@@ -347,28 +372,28 @@ impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
         poseidon_partial_round_constants: [F; POSEIDON_PARTIAL_ROUNDS],
         poseidon_ending_full_round_constants: [[F; POSEIDON_WIDTH]; POSEIDON_HALF_FULL_ROUNDS],
     ) -> Poseidon2<
-            F,
+        F,
         Poseidon2ExternalLayerConstructor,
         Poseidon2InternalLayerConstructor,
         POSEIDON_WIDTH,
         POSEIDON_SBOX_DEGREE,
-        > {
-        let external_constants = ExternalLayerConstants::new(poseidon_beginning_full_round_constants.to_vec(),poseidon_ending_full_round_constants.to_vec());
-
+    > {
+        let external_constants = ExternalLayerConstants::new(
+            poseidon_beginning_full_round_constants.to_vec(),
+            poseidon_ending_full_round_constants.to_vec(),
+        );
 
         return Poseidon2::<
             F,
-        Poseidon2ExternalLayerConstructor,
-        Poseidon2InternalLayerConstructor,
-        POSEIDON_WIDTH,
-        POSEIDON_SBOX_DEGREE,
-        >::new(external_constants, poseidon_partial_round_constants.to_vec()
-        )
-
+            Poseidon2ExternalLayerConstructor,
+            Poseidon2InternalLayerConstructor,
+            POSEIDON_WIDTH,
+            POSEIDON_SBOX_DEGREE,
+        >::new(
+            external_constants,
+            poseidon_partial_round_constants.to_vec(),
+        );
     }
-        
-   
-        
 }
 
 ////
@@ -381,11 +406,12 @@ impl<F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
 //  | 3 |               |                                           |
 //  | 4 |               |                                           |
 impl<
-        F: Field  + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
-    LinearLayers: Sync,
-    Poseidon2ExternalLayerConstructor: ExternalLayerConstructor<F, POSEIDON_WIDTH> + ExternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE> + Sync,
-    Poseidon2InternalLayerConstructor: InternalLayerConstructor<F> + InternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE> + Sync,
-    
+        F: Field + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
+        LinearLayers: Sync,
+        Poseidon2ExternalLayerConstructor: ExternalLayerConstructor<F, POSEIDON_WIDTH>
+            + ExternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>
+            + Sync,
+        Poseidon2InternalLayerConstructor: InternalLayerConstructor<F> + InternalLayer<F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE> + Sync,
         const POSEIDON_WIDTH: usize,
         const POSEIDON_SBOX_DEGREE: u64,
         const POSEIDON_SBOX_REGISTERS: usize,
@@ -404,28 +430,32 @@ impl<
         POSEIDON_HALF_FULL_ROUNDS,
         POSEIDON_PARTIAL_ROUNDS,
         POSEIDON_VECTOR_LEN,
-        >
+    >
 {
     fn width(&self) -> usize {
-        2 +  self.poseidon2_air.width() * POSEIDON_VECTOR_LEN
-// It will be hash of a node and its sibling plus as many column we need for Poseidon
+        2 + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN
+        // It will be hash of a node and its sibling plus as many column we need for Poseidon
     }
 }
 
 impl<
         AB: AirBuilder,
-    LinearLayers: GenericPoseidon2LinearLayers<AB::Expr, POSEIDON_WIDTH>,
-    Poseidon2ExternalLayerConstructor: ExternalLayerConstructor<AB::F, POSEIDON_WIDTH> + ExternalLayer<AB::F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE> + Sync,
-    Poseidon2InternalLayerConstructor: InternalLayerConstructor<AB::F> + InternalLayer<AB::F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE> + Sync,
-    const POSEIDON_WIDTH: usize,
-    const POSEIDON_SBOX_DEGREE: u64,
-    const POSEIDON_SBOX_REGISTERS: usize,
-    const POSEIDON_HALF_FULL_ROUNDS: usize,
-    const POSEIDON_PARTIAL_ROUNDS: usize,
-    const POSEIDON_VECTOR_LEN: usize,
-    > Air<AB> for PoseidonMerkleTreeAir 
-    <
-            AB::F,
+        LinearLayers: GenericPoseidon2LinearLayers<AB::Expr, POSEIDON_WIDTH>,
+        Poseidon2ExternalLayerConstructor: ExternalLayerConstructor<AB::F, POSEIDON_WIDTH>
+            + ExternalLayer<AB::F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>
+            + Sync,
+        Poseidon2InternalLayerConstructor: InternalLayerConstructor<AB::F>
+            + InternalLayer<AB::F, POSEIDON_WIDTH, POSEIDON_SBOX_DEGREE>
+            + Sync,
+        const POSEIDON_WIDTH: usize,
+        const POSEIDON_SBOX_DEGREE: u64,
+        const POSEIDON_SBOX_REGISTERS: usize,
+        const POSEIDON_HALF_FULL_ROUNDS: usize,
+        const POSEIDON_PARTIAL_ROUNDS: usize,
+        const POSEIDON_VECTOR_LEN: usize,
+    > Air<AB>
+    for PoseidonMerkleTreeAir<
+        AB::F,
         LinearLayers,
         Poseidon2ExternalLayerConstructor,
         Poseidon2InternalLayerConstructor,
@@ -435,12 +465,13 @@ impl<
         POSEIDON_HALF_FULL_ROUNDS,
         POSEIDON_PARTIAL_ROUNDS,
         POSEIDON_VECTOR_LEN,
-        >
-    where AB::F : PrimeField  + InjectiveMonomial<POSEIDON_SBOX_DEGREE>
+    >
+where
+    AB::F: PrimeField + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let local = main.row_slice(0);         //we are climbing up the tree
+        let local = main.row_slice(0); //we are climbing up the tree
         let next = main.row_slice(1);
         // Enforce starting values: make sure they are equal to the leaves
         // First we should know if we are right or left leave. even = left, odd = right
@@ -453,33 +484,28 @@ impl<
 
         println!("length of local is {}", local.len());
         //First row is dealing with hash of leaves
-        builder.when_first_row().assert_eq(local[0], //poseidon2.permute(            //            [
-                <AB::Expr as From<AB::F>>::from(self.tree[
-                Self::leaf_index_to_tree_index(
-                    self.leaf_index)][0])
-             
-//                ZERO_PAD
-//            ]
-//        )[0..SECURE_WIDTH]
+        builder.when_first_row().assert_eq(
+            local[0], //poseidon2.permute(            //            [
+            <AB::Expr as From<AB::F>>::from(
+                self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0],
+            ), //                ZERO_PAD
+                      //            ]
+                      //        )[0..SECURE_WIDTH]
         );
 
         //Assuming the leafs are already hash of something
-        builder.when_first_row().assert_eq(local[1], //poseidon2.permute(            
-//            [
-                                           self.tree[
-                Self::sibling_index(Self::leaf_index_to_tree_index(
-                    self.leaf_index))][0],
-             
-        //         ZERO_PAD
-        //     ]
-        // )[0..SECURE_WIDTH]
+        builder.when_first_row().assert_eq(
+            local[1], //poseidon2.permute(
+            //            [
+            self.tree[Self::sibling_index(Self::leaf_index_to_tree_index(self.leaf_index))][0],
+            //         ZERO_PAD
+            //     ]
+            // )[0..SECURE_WIDTH]
         ); //Probably redundant (column 1 is input)
-
 
         let poseidon_part = local[2..].to_vec();
         //we verify that poseidon2 is evaluated correctly
-        let poseidon_local :
-                    &VectorizedPoseidon2Cols<
+        let poseidon_local: &VectorizedPoseidon2Cols<
             _,
             POSEIDON_WIDTH,
             POSEIDON_SBOX_DEGREE,
@@ -495,10 +521,9 @@ impl<
 
         // Enforce state transition constraintse
         // next is parent, it should be equal hash of childs
-        builder.when_transition().assert_eq(next[0], 
-
-                local[local.len() -1],
-        );        
+        builder
+            .when_transition()
+            .assert_eq(next[0], local[local.len() - 1]);
         //builder.when_tansition().assert_eq(next[1], local[0] + local[1]);
 
         // Constrain the final value
@@ -506,7 +531,6 @@ impl<
         let final_value = merkle_root[0];
         builder.when_last_row().assert_eq(local[1], final_value);
     }
-
 }
 
 const POSEIDON_WIDTH: usize = 16;
@@ -562,22 +586,22 @@ fn main() -> Result<(), impl Debug> {
 
     let leave_layer_size = 1 << TREE_HEIGHT - 1;
 
-    let leaves  = generate_random_leaves(leave_layer_size);
-    
-    let leaf_index : usize = 1;
+    let leaves = generate_random_leaves(leave_layer_size);
 
-    let air = PoseidonMerkleTreeAir::<        Val,
-                                              GenericPoseidon2LinearLayersMersenne31,
-                                              Poseidon2ExternalLayerMersenne31<POSEIDON_WIDTH>,
-                                              Poseidon2InternalLayerMersenne31,
-                                              
+    let leaf_index: usize = 1;
+
+    let air = PoseidonMerkleTreeAir::<
+        Val,
+        GenericPoseidon2LinearLayersMersenne31,
+        Poseidon2ExternalLayerMersenne31<POSEIDON_WIDTH>,
+        Poseidon2InternalLayerMersenne31,
         POSEIDON_WIDTH,
         POSEIDON_SBOX_DEGREE,
         POSEIDON_SBOX_REGISTERS,
         POSEIDON_HALF_FULL_ROUNDS,
         POSEIDON_PARTIAL_ROUNDS,
         POSEIDON_VECTOR_LEN,
->::new(leaves, leaf_index);
+    >::new(leaves, leaf_index);
     let trace = air.generate_merkle_proof_trace();
 
     let challenger = Challenger::from_hasher(vec![], byte_hash);
@@ -590,10 +614,9 @@ fn main() -> Result<(), impl Debug> {
     verify(&config, &air, &proof, &vec![])
 }
 
-fn generate_random_leaves<F: PrimeField>(leave_layer_size: usize) -> Vec<[F; SECURE_WIDTH]> where
+fn generate_random_leaves<F: PrimeField>(leave_layer_size: usize) -> Vec<[F; SECURE_WIDTH]>
+where
     StandardUniform: Distribution<[F; SECURE_WIDTH]>,
 {
     (0..leave_layer_size).map(|_| random()).collect::<Vec<_>>()
-    
 }
-
