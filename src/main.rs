@@ -47,7 +47,7 @@ use p3_poseidon2::{
 const SECURE_WIDTH: usize = 8; //this should be half of posiden width so we could compute
                                // the hash of concatination of two hashes.
 
-const TREE_HEIGHT: usize = 4;
+const TREE_HEIGHT: usize = 16;
 
 pub struct PoseidonMerkleTreeAir<
     F: Field + InjectiveMonomial<POSEIDON_SBOX_DEGREE>,
@@ -182,7 +182,7 @@ impl<
 
         // Build the tree upwards
         while current_level.len() > 1 {
-            println!("tree at level {:?} is {:?}", current_level.len(), tree);
+            // println!("tree at level {:?} is {:?}", current_level.len(), tree);
             let mut next_level = Vec::new();
 
             for chunk in current_level.chunks(2) {
@@ -199,7 +199,7 @@ impl<
             tree = new_tree;
         }
 
-        println!("tree at level {:?} is {:?}", current_level.len(), tree);
+        // println!("tree at level {:?} is {:?}", current_level.len(), tree);
 
         tree
     }
@@ -236,7 +236,7 @@ impl<
         );
         let mut parent: [F; SECURE_WIDTH] = [F::ZERO; SECURE_WIDTH];
         parent.copy_from_slice(&poseidon2_hasher.permute(input)[0..SECURE_WIDTH]);
-
+        // println!("input: {:?}, parent: {:?}", input, parent);
         parent
     }
 
@@ -332,35 +332,34 @@ impl<
         let mut poseidon_matrix_width = 0;
 
         for _ in 0..TREE_HEIGHT {
-            //we do not hash the root
-            for i in 0..SECURE_WIDTH {
-                values.push(self.tree[current_node][i]);
+            //We need to know if we are the right node or
+            //the left node to hash in correct order.
+            let sibling_node = match current_node {
+                0 => [<F as PrimeCharacteristicRing>::ZERO; SECURE_WIDTH],
+                _ => self.tree[Self::sibling_index(current_node)],
+            };
+            
+            let (rightessness, siblings_concatinated)  = match Self::is_right_sibling(current_node) {
+                0 => (<F as PrimeCharacteristicRing>::ZERO,[self.tree[current_node],sibling_node].concat()),
+                _ => (<F as PrimeCharacteristicRing>::ONE, [sibling_node,self.tree[current_node]].concat()),
+            };
+
+            values.push(rightessness);
+            for i in 0..SECURE_WIDTH * 2 {
+                values.push(siblings_concatinated[i]);
             }
-            println!("matrix update:");
-            pretty_print_matrix_vector(values.clone());
+
             //if we are at the root then there is no sibling
             //we pad the sibling with 0 just to make poseiden check to pass
-            println!("computing hash of node {current_node} ");
-            if (current_node == 0) { 
-                for _ in 0..SECURE_WIDTH {
-                    values.push(F::ZERO);
-                }
-            } else {
-                for i in 0..SECURE_WIDTH {
-                    values.push(self.tree[Self::sibling_index(current_node)][i]);
-                }
-            }
-            println!("matrix update 01 :");
+            // println!("matrix update 01 :");
             pretty_print_matrix_vector(values.clone());
 
             let mut concat_input: [F; POSEIDON_WIDTH] = [F::ZERO; POSEIDON_WIDTH];
-            concat_input[..SECURE_WIDTH].copy_from_slice(&self.tree[current_node]);
-            if (current_node != 0) { //if we are not root then we have sibling
-                concat_input[SECURE_WIDTH..]
-                    .copy_from_slice(&self.tree[Self::sibling_index(current_node)]);
-            }
-            println!("concat_input: {:?}", concat_input);
+            concat_input.copy_from_slice(&siblings_concatinated);
+            // println!("concat_input: {:?}", concat_input);
             let inputs = vec![concat_input; POSEIDON_VECTOR_LEN];
+            // println!("inputs: {:?} {:?}", inputs, self.poseidon_constants);
+            let permutable_input = inputs.clone()[0];
             let poseidon_matrix =
                 generate_vectorized_trace_rows::<
                     F,
@@ -373,27 +372,31 @@ impl<
                     POSEIDON_VECTOR_LEN,
                     >(inputs, &self.poseidon_constants, extra_capacity_bits);
 
-            println!("poseiden row has {} width and {} height", poseidon_matrix.width(), poseidon_matrix.height());
+
+            let permuted_output = self.poseidon2_hasher.permute(permutable_input);
+
+            // println!("poseiden input {:?} \n and output {:?} ", permutable_input, permuted_output);
+            // println!("poseiden row has {} width and {} height", poseidon_matrix.width(), poseidon_matrix.height());
             for j in 0..poseidon_matrix.width() {
                 // .step_by(SECURE_WIDTH) {
                 values.push(poseidon_matrix.get(0, j))
             }
             poseidon_matrix_width = poseidon_matrix.width();
-            println!("matrix update:");
+            // println!("matrix update:");
             pretty_print_matrix_vector(values.clone());
 
             if current_node != 0 { 
                 current_node = Self::parent_index(current_node);
             }
 
-        }
+        };
 
-        println!("final values has length {}\n", values.len());
+        // println!("final values has length {}\n", values.len());
         pretty_print_matrix_vector(values.clone());
         
         RowMajorMatrix::new(
             values,
-            2 * SECURE_WIDTH * POSEIDON_VECTOR_LEN + poseidon_matrix_width,
+            1 + 2 * SECURE_WIDTH * POSEIDON_VECTOR_LEN + poseidon_matrix_width,
         )
     }
 
@@ -463,8 +466,8 @@ impl<
     >
 {
     fn width(&self) -> usize {
-        println!("width is {}", 16 + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN);
-        2*SECURE_WIDTH + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN
+        // println!("width is {}", 16 + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN);
+        1 + 2*SECURE_WIDTH + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN
         // It will be hash of a node and its sibling plus as many column we need for Poseidon
     }
 }
@@ -520,42 +523,40 @@ where
         // (- 464 16) (/ 448 28)
         // (/ 313 16.0) is almost 20 how does it work?
         // 
-        println!("length of local is {}", local.len());
+        // println!("length of local is {}", local.len());
         
         //First row is dealing with hash of leaves
-        println!("local[0]:{:?} , self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{}",  local[0], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]);
+        for i in 0..SECURE_WIDTH {
+            // println!("local[0]: {:?}, local[{i}+1]:{:?}, local[{i}+1+{SECURE_WIDTH}]:{:?}, self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{:?}", local[0], local[1+i],local[i+1+SECURE_WIDTH], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i]);
         
         builder.when_first_row().assert_eq(
-            local[0],  //poseidon2.permute(            //            [
-            <AB::Expr as From<AB::F>>::from(
-                self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0],
-            ), //                ZERO_PAD
-               //            ]
-               //        )[0..SECURE_WIDTH]
+            local[0] * local[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - local[0])*local[1 + i],             <AB::Expr as From<AB::F>>::from(
+                self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i],
+            )
         );
-
-        println!("We pass frist assert");
+        }
+        // println!("We pass frist assert");
 
         //Assuming the leafs are already hash of something
-        println!("the index of the leaf's in the tree :{}", Self::leaf_index_to_tree_index(self.leaf_index));
-        println!("the index of the leaf's sibling in the tree :{}", Self::sibling_index(Self::leaf_index_to_tree_index(self.leaf_index)));
-        println!("local[1]:{:?}  should be hash of leaf's sibling and first element of the proof:{}",  local[SECURE_WIDTH], self.tree[Self::sibling_index(Self::leaf_index_to_tree_index(self.leaf_index))][0]);
+        // println!("the index of the leaf's in the tree :{}", Self::leaf_index_to_tree_index(self.leaf_index));
+        // println!("the index of the leaf's sibling in the tree :{}", Self::sibling_index(Self::leaf_index_to_tree_index(self.leaf_index)));
+        // println!("local[1]:{:?}  should be hash of leaf's sibling and first element of the proof:{}",  local[SECURE_WIDTH], self.tree[Self::sibling_index(Self::leaf_index_to_tree_index(self.leaf_index))][0]);
 
-        builder.when_first_row().assert_eq(
-            local[0 + SECURE_WIDTH], //poseidon2.permute(
-            //            [
-            self.tree[Self::sibling_index(Self::leaf_index_to_tree_index(self.leaf_index))][0],
-            //         ZERO_PAD
-            //     ]
-            // )[0..SECURE_WIDTH]
-        ); //Probably redundant (column 1 is input)
+        // builder.when_first_row().assert_eq(
+        //     local[0 + SECURE_WIDTH], //poseidon2.permute(
+        //     //            [
+        //     self.tree[Self::sibling_index(Self::leaf_index_to_tree_index(self.leaf_index))][0],
+        //     //         ZERO_PAD
+        //     //     ]
+        //     // )[0..SECURE_WIDTH]
+        // ); //Probably redundant (column 1 is input)
 
-        println!("We pass second assert");
+        // println!("We pass second assert");
 
         //In the last row we should not verify Posieden        
-        let poseidon_part = local[2*SECURE_WIDTH..].to_vec();
-        println!("poseidon_part has length {}", poseidon_part.len());
-        println!("poseidon_part is {:?}", poseidon_part);
+        let poseidon_part = local[1+2*SECURE_WIDTH..].to_vec();
+        // println!("poseidon_part has length {}", poseidon_part.len());
+        // println!("poseidon_part is {:?}", poseidon_part);
         //we verify that poseidon2 is evaluated correctly
         let poseidon_local: &VectorizedPoseidon2Cols<
             _,
@@ -569,24 +570,36 @@ where
 
         let i = 0;
         for perm in &poseidon_local.cols {
-            println!("verifying poseidon perm number {i}");
+            // println!("verifying poseidon perm number {i}");
             air_eval(&self.poseidon2_air, builder, perm);
         }
 
         // Enforce state transition constraintse
-        // next is parent, it should be equal hash of childs
-         builder
-             .when_transition()
-            .assert_zero(<AB::F as PrimeCharacteristicRing>::ZERO);
-            //assert_eq(next[0], local[local.len() - 1]);
+        // next is parent, it should be equal hash of childs        
+        for i in 0..SECURE_WIDTH {
+            // println!("comparing local {} element: {:?} and next {} element: {:?}", local.len() - (SECURE_WIDTH * 2) + i, local[local.len() - (SECURE_WIDTH * 2) + i], i, next[i + 1]);
+            // println!("or comparing local {} element: {:?} and next {} element: {:?}", local.len() - (SECURE_WIDTH * 2) + i, local[local.len() - (SECURE_WIDTH * 2) + i], i + SECURE_WIDTH, next[1 + i + SECURE_WIDTH]);
+            // println!("right: {:?} left: {:?}",next[0] * next[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - next[0])*next[1 + i], local[local.len() - (SECURE_WIDTH * 2) + i]);
+            builder
+                .when_transition()
+                .assert_eq(next[0] * next[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - next[0])*next[1 + i], local[local.len() - (SECURE_WIDTH * 2) + i]);
+        }
         //builder.when_tansition().assert_eq(next[1], local[0] + local[1]);
 
         // Constrain the final value
         let merkle_root = self.tree[0];
-        let final_value = merkle_root[0];
-        builder.when_last_row()
-            .assert_zero(<AB::F as PrimeCharacteristicRing>::ZERO);
-            //.assert_eq(local[1], final_value);
+
+        for i in 0..SECURE_WIDTH {
+            // println!("local[0]: {:?}, local[{i}+1]:{:?}, local[{i}+1+{SECURE_WIDTH}]:{:?}, self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{:?}", local[0], local[1+i],local[i+1+SECURE_WIDTH], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i]);
+
+            builder.when_last_row()
+                .assert_eq(
+                    local[0] * local[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - local[0])*local[1 + i],             <AB::Expr as From<AB::F>>::from(
+                    merkle_root[i],
+                )
+            );
+        }
+
     }
 }
 
@@ -682,11 +695,11 @@ where
 
 fn pretty_print_matrix_vector<F: Field>(values: Vec<F> )
 {
-    print!("[ ");
-    for i in 0..values.len(){
-        print!("{}, ", values[i]);
-    }
-    println!(" ]");
+    // print!("[ ");
+    // for i in 0..values.len(){
+    //     print!("{}, ", values[i]);
+    // }
+    // println!(" ]");
     
 }
 
