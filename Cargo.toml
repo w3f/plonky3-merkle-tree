@@ -30,6 +30,8 @@ p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3.git" }
 rand = { version = "0.9.0", default-features = true, features = ["small_rng"] }
 tracing-subscriber = { version = "0.3.17", features = ["std", "env-filter"] }
 tracing-forest = { version = "0.1.6", features = ["ansi", "smallvec"] }
+serde = { version = "1.0", features = ["derive"] }
+bincode = { version = "2.0.0", features = ["serde"]  }
 
 [patch.'https://github.com/Plonky3/Plonky3']
 p3-air = { git = "https://github.com/w3f/Plonky3.git", branch="skalman--poseidon2-air-tweaks" }

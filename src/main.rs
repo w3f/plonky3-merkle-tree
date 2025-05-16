@@ -681,6 +681,14 @@ fn main() -> Result<(), impl Debug> {
 
     let proof = prove(&config, &air, trace, &vec![]);
 
+
+        let bin_config = bincode::config::standard()
+        .with_little_endian()
+        .with_fixed_int_encoding();
+    let proof_bytes =
+        bincode::serde::encode_to_vec(proof.borrow(), bin_config).expect("Failed to serialize proof");
+    println!("Proof size: {} bytes", proof_bytes.len());
+    
     verify(&config, &air, &proof, &vec![])
 }
 
@@ -710,3 +718,4 @@ mod test {
     }
     
 }
+
