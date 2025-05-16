@@ -4,12 +4,12 @@ use std::marker::PhantomData;
 use rand::distr::StandardUniform;
 use rand::prelude::Distribution;
 
-use rand::rngs::{StdRng, SmallRng};
-use rand::{SeedableRng, random};
+use rand::rngs::{SmallRng, StdRng};
 use rand::Rng;
+use rand::{random, SeedableRng};
 
 use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{Field, InjectiveMonomial, PrimeField, PrimeCharacteristicRing};
+use p3_field::{Field, InjectiveMonomial, PrimeCharacteristicRing, PrimeField};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
 use std::borrow::Borrow;
@@ -338,10 +338,16 @@ impl<
                 0 => [<F as PrimeCharacteristicRing>::ZERO; SECURE_WIDTH],
                 _ => self.tree[Self::sibling_index(current_node)],
             };
-            
-            let (rightessness, siblings_concatinated)  = match Self::is_right_sibling(current_node) {
-                0 => (<F as PrimeCharacteristicRing>::ZERO,[self.tree[current_node],sibling_node].concat()),
-                _ => (<F as PrimeCharacteristicRing>::ONE, [sibling_node,self.tree[current_node]].concat()),
+
+            let (rightessness, siblings_concatinated) = match Self::is_right_sibling(current_node) {
+                0 => (
+                    <F as PrimeCharacteristicRing>::ZERO,
+                    [self.tree[current_node], sibling_node].concat(),
+                ),
+                _ => (
+                    <F as PrimeCharacteristicRing>::ONE,
+                    [sibling_node, self.tree[current_node]].concat(),
+                ),
             };
 
             values.push(rightessness);
@@ -370,8 +376,7 @@ impl<
                     POSEIDON_HALF_FULL_ROUNDS,
                     POSEIDON_PARTIAL_ROUNDS,
                     POSEIDON_VECTOR_LEN,
-                    >(inputs, &self.poseidon_constants, extra_capacity_bits);
-
+                >(inputs, &self.poseidon_constants, extra_capacity_bits);
 
             let permuted_output = self.poseidon2_hasher.permute(permutable_input);
 
@@ -385,15 +390,14 @@ impl<
             // println!("matrix update:");
             pretty_print_matrix_vector(values.clone());
 
-            if current_node != 0 { 
+            if current_node != 0 {
                 current_node = Self::parent_index(current_node);
             }
-
-        };
+        }
 
         // println!("final values has length {}\n", values.len());
         pretty_print_matrix_vector(values.clone());
-        
+
         RowMajorMatrix::new(
             values,
             1 + 2 * SECURE_WIDTH * POSEIDON_VECTOR_LEN + poseidon_matrix_width,
@@ -467,7 +471,7 @@ impl<
 {
     fn width(&self) -> usize {
         // println!("width is {}", 16 + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN);
-        1 + 2*SECURE_WIDTH + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN
+        1 + 2 * SECURE_WIDTH + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN
         // It will be hash of a node and its sibling plus as many column we need for Poseidon
     }
 }
@@ -517,23 +521,25 @@ where
 
         //let poseidon2 = Poseidon2Merkle::<AB::F>;
 
-        //local (length SECURE_WIDTH * 2 + POSEIDEN_WIDTH * (half_full_rounds*2+partial rounds)) 
+        //local (length SECURE_WIDTH * 2 + POSEIDEN_WIDTH * (half_full_rounds*2+partial rounds))
         //                (8 * 2 + 16 * (4*2 + 20)) * 2  (* (+ (* 2 8) (* 16 (+ (* 2 4) 20)  ) ) 1) 464 then why 329
         // (- 329 313) so 313 from poseiden which you think should be divisable by 16
         // (- 464 16) (/ 448 28)
         // (/ 313 16.0) is almost 20 how does it work?
-        // 
+        //
         // println!("length of local is {}", local.len());
-        
+
         //First row is dealing with hash of leaves
         for i in 0..SECURE_WIDTH {
             // println!("local[0]: {:?}, local[{i}+1]:{:?}, local[{i}+1+{SECURE_WIDTH}]:{:?}, self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{:?}", local[0], local[1+i],local[i+1+SECURE_WIDTH], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i]);
-        
-        builder.when_first_row().assert_eq(
-            local[0] * local[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - local[0])*local[1 + i],             <AB::Expr as From<AB::F>>::from(
-                self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i],
-            )
-        );
+
+            builder.when_first_row().assert_eq(
+                local[0] * local[i + 1 + SECURE_WIDTH]
+                    + (AB::Expr::from(AB::F::ONE) - local[0]) * local[1 + i],
+                <AB::Expr as From<AB::F>>::from(
+                    self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i],
+                ),
+            );
         }
         // println!("We pass frist assert");
 
@@ -553,8 +559,8 @@ where
 
         // println!("We pass second assert");
 
-        //In the last row we should not verify Posieden        
-        let poseidon_part = local[1+2*SECURE_WIDTH..].to_vec();
+        //In the last row we should not verify Posieden
+        let poseidon_part = local[1 + 2 * SECURE_WIDTH..].to_vec();
         // println!("poseidon_part has length {}", poseidon_part.len());
         // println!("poseidon_part is {:?}", poseidon_part);
         //we verify that poseidon2 is evaluated correctly
@@ -575,14 +581,16 @@ where
         }
 
         // Enforce state transition constraintse
-        // next is parent, it should be equal hash of childs        
+        // next is parent, it should be equal hash of childs
         for i in 0..SECURE_WIDTH {
             // println!("comparing local {} element: {:?} and next {} element: {:?}", local.len() - (SECURE_WIDTH * 2) + i, local[local.len() - (SECURE_WIDTH * 2) + i], i, next[i + 1]);
             // println!("or comparing local {} element: {:?} and next {} element: {:?}", local.len() - (SECURE_WIDTH * 2) + i, local[local.len() - (SECURE_WIDTH * 2) + i], i + SECURE_WIDTH, next[1 + i + SECURE_WIDTH]);
             // println!("right: {:?} left: {:?}",next[0] * next[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - next[0])*next[1 + i], local[local.len() - (SECURE_WIDTH * 2) + i]);
-            builder
-                .when_transition()
-                .assert_eq(next[0] * next[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - next[0])*next[1 + i], local[local.len() - (SECURE_WIDTH * 2) + i]);
+            builder.when_transition().assert_eq(
+                next[0] * next[i + 1 + SECURE_WIDTH]
+                    + (AB::Expr::from(AB::F::ONE) - next[0]) * next[1 + i],
+                local[local.len() - (SECURE_WIDTH * 2) + i],
+            );
         }
         //builder.when_tansition().assert_eq(next[1], local[0] + local[1]);
 
@@ -592,14 +600,12 @@ where
         for i in 0..SECURE_WIDTH {
             // println!("local[0]: {:?}, local[{i}+1]:{:?}, local[{i}+1+{SECURE_WIDTH}]:{:?}, self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{:?}", local[0], local[1+i],local[i+1+SECURE_WIDTH], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i]);
 
-            builder.when_last_row()
-                .assert_eq(
-                    local[0] * local[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - local[0])*local[1 + i],             <AB::Expr as From<AB::F>>::from(
-                    merkle_root[i],
-                )
+            builder.when_last_row().assert_eq(
+                local[0] * local[i + 1 + SECURE_WIDTH]
+                    + (AB::Expr::from(AB::F::ONE) - local[0]) * local[1 + i],
+                <AB::Expr as From<AB::F>>::from(merkle_root[i]),
             );
         }
-
     }
 }
 
@@ -681,41 +687,39 @@ fn main() -> Result<(), impl Debug> {
 
     let proof = prove(&config, &air, trace, &vec![]);
 
-
-        let bin_config = bincode::config::standard()
+    let bin_config = bincode::config::standard()
         .with_little_endian()
         .with_fixed_int_encoding();
-    let proof_bytes =
-        bincode::serde::encode_to_vec(proof.borrow(), bin_config).expect("Failed to serialize proof");
+    let proof_bytes = bincode::serde::encode_to_vec(proof.borrow(), bin_config)
+        .expect("Failed to serialize proof");
     println!("Proof size: {} bytes", proof_bytes.len());
-    
+
     verify(&config, &air, &proof, &vec![])
 }
 
-fn generate_random_leaves<F: PrimeField>(leave_layer_size: usize, randomness_seed: u64) -> Vec<[F; SECURE_WIDTH]>
+fn generate_random_leaves<F: PrimeField>(
+    leave_layer_size: usize,
+    randomness_seed: u64,
+) -> Vec<[F; SECURE_WIDTH]>
 where
     StandardUniform: Distribution<[F; SECURE_WIDTH]>,
 {
     let mut rng = SmallRng::seed_from_u64(randomness_seed);
 
-    (0..leave_layer_size).map(|_| rng.random()).collect::<Vec<_>>()
+    (0..leave_layer_size)
+        .map(|_| rng.random())
+        .collect::<Vec<_>>()
 }
 
-fn pretty_print_matrix_vector<F: Field>(values: Vec<F> )
-{
+fn pretty_print_matrix_vector<F: Field>(values: Vec<F>) {
     // print!("[ ");
     // for i in 0..values.len(){
     //     print!("{}, ", values[i]);
     // }
     // println!(" ]");
-    
 }
 
 #[cfg(test)]
 mod test {
-    fn test_check_index_to_tree_works() {
-        
-    }
-    
+    fn test_check_index_to_tree_works() {}
 }
-
