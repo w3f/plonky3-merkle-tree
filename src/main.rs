@@ -322,7 +322,7 @@ impl<
         //tell plonky to turn it into a nice a table with number of columns
         //There are two columns in our air table and the number of steps is the
         //depth of the tree.
-        let mut values = Vec::with_capacity(TREE_HEIGHT * (2 + POSEIDON_VECTOR_LEN));
+        let mut values = Vec::with_capacity(TREE_HEIGHT * POSEIDON_VECTOR_LEN);
 
         //we can just fill up the columns from the tree
         let mut current_node = Self::leaf_index_to_tree_index(self.leaf_index);
@@ -349,11 +349,13 @@ impl<
                     [sibling_node, self.tree[current_node]].concat(),
                 ),
             };
-
+    
             values.push(rightessness);
-            for i in 0..SECURE_WIDTH * 2 {
-                values.push(siblings_concatinated[i]);
-            }
+            //we do not need to push the input, the input is 
+            //included in posseiden trace.
+            // for i in 0..SECURE_WIDTH * 2 {
+            //     values.push(siblings_concatinated[i]);
+            // }
 
             //if we are at the root then there is no sibling
             //we pad the sibling with 0 just to make poseiden check to pass
@@ -364,8 +366,8 @@ impl<
             concat_input.copy_from_slice(&siblings_concatinated);
             // println!("concat_input: {:?}", concat_input);
             let inputs = vec![concat_input; POSEIDON_VECTOR_LEN];
-            // println!("inputs: {:?} {:?}", inputs, self.poseidon_constants);
-            let permutable_input = inputs.clone()[0];
+            // println!("inputs: {:?}",inputs);
+            //let permutable_input = inputs.clone()[0];
             let poseidon_matrix =
                 generate_vectorized_trace_rows::<
                     F,
@@ -378,17 +380,17 @@ impl<
                     POSEIDON_VECTOR_LEN,
                 >(inputs, &self.poseidon_constants, extra_capacity_bits);
 
-            let permuted_output = self.poseidon2_hasher.permute(permutable_input);
+            //let permuted_output = self.poseidon2_hasher.permute(permutable_input);
 
             // println!("poseiden input {:?} \n and output {:?} ", permutable_input, permuted_output);
             // println!("poseiden row has {} width and {} height", poseidon_matrix.width(), poseidon_matrix.height());
             for j in 0..poseidon_matrix.width() {
                 // .step_by(SECURE_WIDTH) {
-                values.push(poseidon_matrix.get(0, j))
+                values.push(poseidon_matrix.get(0, j));
             }
             poseidon_matrix_width = poseidon_matrix.width();
             // println!("matrix update:");
-            pretty_print_matrix_vector(values.clone());
+            // pretty_print_matrix_vector(values.clone());
 
             if current_node != 0 {
                 current_node = Self::parent_index(current_node);
@@ -396,12 +398,12 @@ impl<
         }
 
         // println!("final values has length {}\n", values.len());
-        pretty_print_matrix_vector(values.clone());
-
+        //pretty_print_matrix_vector(values.clone());
+    
         RowMajorMatrix::new(
             values,
-            1 + 2 * SECURE_WIDTH * POSEIDON_VECTOR_LEN + poseidon_matrix_width,
-        )
+            1 + poseidon_matrix_width,)
+    
     }
 
     fn new_poseidon_from_air_constants(
@@ -471,7 +473,7 @@ impl<
 {
     fn width(&self) -> usize {
         // println!("width is {}", 16 + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN);
-        1 + 2 * SECURE_WIDTH + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN
+        1 + self.poseidon2_air.width() * POSEIDON_VECTOR_LEN
         // It will be hash of a node and its sibling plus as many column we need for Poseidon
     }
 }
@@ -528,14 +530,16 @@ where
         // (/ 313 16.0) is almost 20 how does it work?
         //
         // println!("length of local is {}", local.len());
+        let LEFT_INPUT_INDEX = 2; //selector col plus length col
+        let RIGHT_INPUT_INDEX = 2 + SECURE_WIDTH; //selector col plus length col plus left input
 
         //First row is dealing with hash of leaves
         for i in 0..SECURE_WIDTH {
-            // println!("local[0]: {:?}, local[{i}+1]:{:?}, local[{i}+1+{SECURE_WIDTH}]:{:?}, self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{:?}", local[0], local[1+i],local[i+1+SECURE_WIDTH], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i]);
+            //println!("local[0]: {:?}, local[{i}+1]:{:?}, local[{i}+1+{SECURE_WIDTH}]:{:?}, self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{:?}", local[0], local[1+i],local[i+1+SECURE_WIDTH], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i]);
 
             builder.when_first_row().assert_eq(
-                local[0] * local[i + 1 + SECURE_WIDTH]
-                    + (AB::Expr::from(AB::F::ONE) - local[0]) * local[1 + i],
+                local[0] * local[i +  RIGHT_INPUT_INDEX]
+                    + (AB::Expr::from(AB::F::ONE) - local[0]) * local[i + LEFT_INPUT_INDEX ],
                 <AB::Expr as From<AB::F>>::from(
                     self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i],
                 ),
@@ -560,7 +564,7 @@ where
         // println!("We pass second assert");
 
         //In the last row we should not verify Posieden
-        let poseidon_part = local[1 + 2 * SECURE_WIDTH..].to_vec();
+        let poseidon_part = local[1..].to_vec();
         // println!("poseidon_part has length {}", poseidon_part.len());
         // println!("poseidon_part is {:?}", poseidon_part);
         //we verify that poseidon2 is evaluated correctly
@@ -587,8 +591,8 @@ where
             // println!("or comparing local {} element: {:?} and next {} element: {:?}", local.len() - (SECURE_WIDTH * 2) + i, local[local.len() - (SECURE_WIDTH * 2) + i], i + SECURE_WIDTH, next[1 + i + SECURE_WIDTH]);
             // println!("right: {:?} left: {:?}",next[0] * next[i + 1 + SECURE_WIDTH]  + (AB::Expr::from(AB::F::ONE) - next[0])*next[1 + i], local[local.len() - (SECURE_WIDTH * 2) + i]);
             builder.when_transition().assert_eq(
-                next[0] * next[i + 1 + SECURE_WIDTH]
-                    + (AB::Expr::from(AB::F::ONE) - next[0]) * next[1 + i],
+                next[0] * next[i + RIGHT_INPUT_INDEX]
+                    + (AB::Expr::from(AB::F::ONE) - next[0]) * next[LEFT_INPUT_INDEX + i],
                 local[local.len() - (SECURE_WIDTH * 2) + i],
             );
         }
@@ -601,8 +605,8 @@ where
             // println!("local[0]: {:?}, local[{i}+1]:{:?}, local[{i}+1+{SECURE_WIDTH}]:{:?}, self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{:?}", local[0], local[1+i],local[i+1+SECURE_WIDTH], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i]);
 
             builder.when_last_row().assert_eq(
-                local[0] * local[i + 1 + SECURE_WIDTH]
-                    + (AB::Expr::from(AB::F::ONE) - local[0]) * local[1 + i],
+                local[0] * local[i + RIGHT_INPUT_INDEX]
+                    + (AB::Expr::from(AB::F::ONE) - local[0]) * local[LEFT_INPUT_INDEX + i],
                 <AB::Expr as From<AB::F>>::from(merkle_root[i]),
             );
         }
