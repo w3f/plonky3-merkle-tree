@@ -349,9 +349,9 @@ impl<
                     [sibling_node, self.tree[current_node]].concat(),
                 ),
             };
-    
+
             values.push(rightessness);
-            //we do not need to push the input, the input is 
+            //we do not need to push the input, the input is
             //included in posseiden trace.
             // for i in 0..SECURE_WIDTH * 2 {
             //     values.push(siblings_concatinated[i]);
@@ -399,11 +399,8 @@ impl<
 
         // println!("final values has length {}\n", values.len());
         //pretty_print_matrix_vector(values.clone());
-    
-        RowMajorMatrix::new(
-            values,
-            1 + poseidon_matrix_width,)
-    
+
+        RowMajorMatrix::new(values, 1 + poseidon_matrix_width)
     }
 
     fn new_poseidon_from_air_constants(
@@ -538,8 +535,8 @@ where
             //println!("local[0]: {:?}, local[{i}+1]:{:?}, local[{i}+1+{SECURE_WIDTH}]:{:?}, self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][0]:{:?}", local[0], local[1+i],local[i+1+SECURE_WIDTH], self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i]);
 
             builder.when_first_row().assert_eq(
-                local[0] * local[i +  RIGHT_INPUT_INDEX]
-                    + (AB::Expr::from(AB::F::ONE) - local[0]) * local[i + LEFT_INPUT_INDEX ],
+                local[0] * local[i + RIGHT_INPUT_INDEX]
+                    + (AB::Expr::from(AB::F::ONE) - local[0]) * local[i + LEFT_INPUT_INDEX],
                 <AB::Expr as From<AB::F>>::from(
                     self.tree[Self::leaf_index_to_tree_index(self.leaf_index)][i],
                 ),
